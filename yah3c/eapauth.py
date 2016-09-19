@@ -15,6 +15,17 @@ from colorama import Fore, Style, init
 # init() # required in Windows
 from eappacket import *
 
+import scapy.all as scapy
+import struct
+
+
+def hexlify_mac_addr(mac_addr):
+    hxs = mac_addr.split(':')
+    hxs = [int(h, 16) for h in hxs]
+    # hxs = [struct.pack('!B', h) for h in hxs]
+    hex_addr = struct.pack('!BBBBBB', *hxs)
+    return hex_addr
+
 def display_prompt(color, string):
     prompt = color + Style.BRIGHT + '==> ' + Style.RESET_ALL
     prompt += Style.BRIGHT + string + Style.RESET_ALL
@@ -27,14 +38,27 @@ def display_packet(packet):
     print '\tTo: ' + repr(packet[6:12])
     print '\tType: ' + repr(packet[12:14])
 
+class Client:
+    def __init__(self):
+        pass
+
+    def send(self, payload):
+        e = scapy.Ether(payload)
+        scapy.sendp(e)
+        
+
 class EAPAuth:
     def __init__(self, login_info):
         # bind the h3c client to the EAP protocal 
-        self.client = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETHERTYPE_PAE))
-        self.client.bind((login_info['ethernet_interface'], ETHERTYPE_PAE))
+        # self.client = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETHERTYPE_PAE))
+        # self.client.bind((login_info['ethernet_interface'], ETHERTYPE_PAE))
+
         # get local ethernet card address
-        self.mac_addr = self.client.getsockname()[4]
-        self.ethernet_header = get_ethernet_header(self.mac_addr, PAE_GROUP_ADDR, ETHERTYPE_PAE)
+        # self.mac_addr = self.client.getsockname()[4]
+        self.client = Client()
+        self.mac_addr = scapy.get_if_hwaddr(login_info['ethernet_interface'])
+        self.mac_addr_hex = hexlify_mac_addr(self.mac_addr)
+        self.ethernet_header = get_ethernet_header(self.mac_addr_hex, PAE_GROUP_ADDR, ETHERTYPE_PAE)
         self.has_sent_logoff = False
         self.login_info = login_info
         self.version_info = '\x06\x07bjQ7SE8BZ3MqHhs3clMregcDY3Y=\x20\x20'
@@ -63,6 +87,10 @@ class EAPAuth:
                         self.version_info + self.login_info['username'])))
 
     def send_response_md5(self, packet_id, md5data):
+        """
+            first 16 character of password ordinally xor
+            the md5 data that just receive
+        """
         md5 = self.login_info['password'][0:16]
         if len(md5) < 16:
             md5 = md5 + '\x00' * (16 - len (md5))
@@ -150,14 +178,37 @@ class EAPAuth:
         else:
             display_prompt(Fore.YELLOW, 'Got unknown EAP code (%i)' % code)
 
+    def EAP_handler_helper(self, p):
+        # print p.summary()
+        # print repr(p)
+        raw_bytes = str(p).encode('HEX')
+        unpack_bytes = []
+        for i in range(len(raw_bytes)):
+            if (i % 2 != 0):
+                continue
+            h = raw_bytes[i] + raw_bytes[i + 1]
+            h = int(h, 16)
+            b = struct.pack("B", h)
+            unpack_bytes.append(b)
+        unpack_bytes = unpack_bytes[14: ]
+        ret = ''.join(unpack_bytes)
+        self.EAP_handler(ret)
+
     def serve_forever(self):
         try:
             self.send_start()
-            while True:
-                eap_packet = self.client.recv(1600)
 
-                # strip the ethernet_header and handle
-                self.EAP_handler(eap_packet[14:])
+            scapy.sniff(
+                filter='ether proto 0x888e',
+                prn=self.EAP_handler_helper,
+                lfilter=lambda d: d.dst == self.mac_addr,
+                # stop_filter=lambda x: x.dst == self.mac_addr
+                )
+            # while True:
+            #     eap_packet = self.client.recv(1600)
+
+            #     # strip the ethernet_header and handle
+            #     self.EAP_handler(eap_packet[14:])
         except KeyboardInterrupt:
             print Fore.RED + Style.BRIGHT + 'Interrupted by user' + Style.RESET_ALL
             self.send_logoff()

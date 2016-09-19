@@ -1,0 +1,7 @@
+scapy
+pcapy
+dnet
+pypcap # Install to fix `Press Enter to trigger packet reading` problems
+#PyX # download source and run `python setup.py install`
+
+#brew install libdnet
